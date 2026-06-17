@@ -1,139 +1,289 @@
-import { useRef, useMemo, useEffect } from "react";
+import { useRef, useMemo, useEffect, useState } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
-import {
-  CatmullRomCurve3,
-  Object3D,
-  Color,
-  Vector3,
-  BufferGeometry,
-  Float32BufferAttribute,
-} from "three";
+import { OrbitControls } from "@react-three/drei";
+import { Object3D, Color, Vector3, Float32BufferAttribute } from "three";
 import { useInputSpine } from "./hooks/useInputSpine";
+import "./App.css";
 
-const PARTICLE_COUNT = 50;
-const TRAVEL_SPEED = 0.12; // how fast particles move along the path
-const OSC_SPEED = 2.5; // how fast the perpendicular wiggle cycles
-const OSC_CYCLES = 2; // wave cycles visible along the body
-const AMP_PERP = 0.45; // perpendicular (side-to-side) amplitude
-const AMP_ALONG = 0.17; // along-axis (fore/aft) amplitude — the 0.15 factor
-const SPHERE_RADIUS = 0.07;
+// Match p5 sketch proportions (p5 canvas 400×400, Three.js frustum height ≈ 11.55 at z=10)
+// Scale factor: 11.55 / 400 ≈ 0.029 per pixel
+const N_CLUSTERS = 5;
+const PARTICLES_PER_CLUSTER = 2000;
+const N_TOTAL = N_CLUSTERS * PARTICLES_PER_CLUSTER;
+const SPHERE_RADIUS = 0.5; // p5: 20px → 0.58
+const PARTICLE_SIZE = 0.01; // p5: 2px  → 0.058
+const RADIAL_BIAS = 0.5;
+const CLUSTER_SPACING = 0.3; // p5: 10px → 0.29
+const T_START = (N_CLUSTERS - 1) * CLUSTER_SPACING;
+const SPEED = 2.5; // world units/sec (p5: 1.5px/frame × 60 × 0.029)
+const MORPH_SPEED = 1.8; // 0→1 per second
+const STAGGER = 0.8;
+const SINE_FREQ = 1.5; // cycles/unit (p5: 0.05/px ÷ 0.029 ≈ 1.72)
+const SINE_AMP = 1.0; // world units (p5: 40px → 1.16)
+const J_PTS = 20;
 
-const PALETTE = [
-  "#e74c3c",
-  "#e67e22",
-  "#f1c40f",
-  "#2ecc71",
-  "#1abc9c",
-  "#3498db",
-  "#9b59b6",
-  "#e91e63",
-  "#00bcd4",
-  "#ff5722",
+const COLOR_PALETTE = [
+  "#abcd5e",
+  "#14976b",
+  "#2b67af",
+  "#62b6de",
+  "#f589a3",
+  "#ef562f",
+  "#fc8405",
+  "#f9d531",
 ];
 
+function getOffsetPointAt(path, lengths, totalLen, d) {
+  d = Math.min(Math.max(d, 0), totalLen);
+  for (let j = 1; j < path.length; j++) {
+    if (lengths[j] >= d) {
+      const frac = (d - lengths[j - 1]) / (lengths[j] - lengths[j - 1]);
+      const pos = new Vector3().lerpVectors(path[j - 1], path[j], frac);
+      const ahead = path[Math.min(j + J_PTS, path.length - 1)];
+      const behind = path[Math.max(j - J_PTS, 0)];
+      const tx = ahead.x - behind.x;
+      const ty = ahead.y - behind.y;
+      const tLen = Math.sqrt(tx * tx + ty * ty) || 1;
+      const sine = Math.sin(d * SINE_FREQ) * SINE_AMP;
+      pos.x += (-ty / tLen) * sine;
+      pos.y += (tx / tLen) * sine;
+      return pos;
+    }
+  }
+  return path[path.length - 1].clone();
+}
+
 const _dummy = new Object3D();
-const _color = new Color();
-const _tangent = new Vector3();
 
-function Swarm({ pointsRef }) {
+function DragonClusters({ committedRef, metaRef, morphCountRef }) {
   const meshRef = useRef();
-  const timeRef = useRef(0);
 
-  const particles = useMemo(
-    () =>
-      Array.from({ length: PARTICLE_COUNT }, (_, i) => ({
-        phase: i / PARTICLE_COUNT, // evenly staggered 0→1 along the path
-        color: PALETTE[Math.floor(Math.random() * PALETTE.length)],
-      })),
-    [],
+  const particleData = useMemo(() => {
+    const offsets = new Float32Array(N_TOTAL * 3);
+    const delays = new Float32Array(N_TOTAL);
+    const clusterIdxs = new Int32Array(N_TOTAL);
+    const colorArr = [];
+
+    for (let c = 0; c < N_CLUSTERS; c++) {
+      for (let p = 0; p < PARTICLES_PER_CLUSTER; p++) {
+        const i = c * PARTICLES_PER_CLUSTER + p;
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.acos(Math.random() * 2 - 1);
+        const r = SPHERE_RADIUS * Math.pow(Math.random(), RADIAL_BIAS);
+        offsets[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+        offsets[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+        offsets[i * 3 + 2] = r * Math.cos(phi);
+        delays[i] = Math.random();
+        clusterIdxs[i] = c;
+        colorArr.push(
+          new Color(
+            COLOR_PALETTE[Math.floor(Math.random() * COLOR_PALETTE.length)],
+          ),
+        );
+      }
+    }
+    return { offsets, delays, clusterIdxs, colorArr };
+  }, []);
+
+  const worldPosRef = useRef(new Float32Array(N_TOTAL * 3));
+  const sourcePosRef = useRef(new Float32Array(N_TOTAL * 3));
+  const targetPosRef = useRef(new Float32Array(N_TOTAL * 3));
+  const clusterCenters = useRef(
+    Array.from({ length: N_CLUSTERS }, () => new Vector3()),
   );
+  const tRef = useRef(T_START);
+  const morphPhaseRef = useRef("idle");
+  const morphProgressRef = useRef(0);
+  const lastMorphCountRef = useRef(0);
 
-  // Seed instanceColor before first render so the shader compiles with it
   useEffect(() => {
     const mesh = meshRef.current;
     if (!mesh) return;
-    particles.forEach(({ color }, i) => {
-      _color.set(color);
-      mesh.setColorAt(i, _color);
-    });
+    particleData.colorArr.forEach((col, i) => mesh.setColorAt(i, col));
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  }, [particles]);
+    // Force shader recompile so USE_COLOR gets included now that instanceColor exists
+    mesh.material.needsUpdate = true;
+  }, [particleData]);
 
   useFrame((_, delta) => {
-    timeRef.current += delta;
-    const time = timeRef.current;
     const mesh = meshRef.current;
-    const points = pointsRef.current;
-    if (!mesh || points.length < 2) {
-      if (mesh) {
-        for (let i = 0; i < PARTICLE_COUNT; i++) {
+    if (!mesh) return;
+
+    const path = committedRef.current;
+    const { lengths, totalLen } = metaRef.current;
+    const { offsets, delays, clusterIdxs } = particleData;
+
+    if (morphCountRef.current > lastMorphCountRef.current && path.length >= 2) {
+      lastMorphCountRef.current = morphCountRef.current;
+      sourcePosRef.current.set(worldPosRef.current);
+
+      for (let c = 0; c < N_CLUSTERS; c++) {
+        const d = T_START - c * CLUSTER_SPACING;
+        clusterCenters.current[c].copy(
+          getOffsetPointAt(path, lengths, totalLen, Math.max(d, 0)),
+        );
+      }
+      for (let i = 0; i < N_TOTAL; i++) {
+        const ctr = clusterCenters.current[clusterIdxs[i]];
+        targetPosRef.current[i * 3] = ctr.x + offsets[i * 3];
+        targetPosRef.current[i * 3 + 1] = ctr.y + offsets[i * 3 + 1];
+        targetPosRef.current[i * 3 + 2] = ctr.z + offsets[i * 3 + 2];
+      }
+      morphPhaseRef.current = "morph";
+      morphProgressRef.current = 0;
+    }
+
+    if (morphPhaseRef.current === "morph") {
+      morphProgressRef.current = Math.min(
+        morphProgressRef.current + MORPH_SPEED * delta,
+        1,
+      );
+      const progress = morphProgressRef.current;
+
+      for (let i = 0; i < N_TOTAL; i++) {
+        const d = delays[i] * STAGGER;
+        let localP = (progress - d) / (1 - d);
+        localP = Math.min(Math.max(localP, 0), 1);
+
+        const wx =
+          sourcePosRef.current[i * 3] +
+          (targetPosRef.current[i * 3] - sourcePosRef.current[i * 3]) * localP;
+        const wy =
+          sourcePosRef.current[i * 3 + 1] +
+          (targetPosRef.current[i * 3 + 1] - sourcePosRef.current[i * 3 + 1]) *
+            localP;
+        const wz =
+          sourcePosRef.current[i * 3 + 2] +
+          (targetPosRef.current[i * 3 + 2] - sourcePosRef.current[i * 3 + 2]) *
+            localP;
+
+        worldPosRef.current[i * 3] = wx;
+        worldPosRef.current[i * 3 + 1] = wy;
+        worldPosRef.current[i * 3 + 2] = wz;
+        _dummy.position.set(wx, wy, wz);
+        _dummy.scale.setScalar(1);
+        _dummy.updateMatrix();
+        mesh.setMatrixAt(i, _dummy.matrix);
+      }
+
+      if (morphProgressRef.current >= 1) {
+        morphPhaseRef.current = "idle";
+        tRef.current = T_START;
+      }
+    } else {
+      if (totalLen <= 0) {
+        for (let i = 0; i < N_TOTAL; i++) {
           _dummy.scale.setScalar(0);
           _dummy.updateMatrix();
           mesh.setMatrixAt(i, _dummy.matrix);
         }
-        mesh.instanceMatrix.needsUpdate = true;
+      } else {
+        tRef.current += SPEED * delta;
+        if (tRef.current > totalLen) tRef.current = T_START;
+
+        for (let c = 0; c < N_CLUSTERS; c++) {
+          const d = tRef.current - c * CLUSTER_SPACING;
+          if (d >= 0)
+            clusterCenters.current[c].copy(
+              getOffsetPointAt(path, lengths, totalLen, d),
+            );
+        }
+
+        for (let i = 0; i < N_TOTAL; i++) {
+          const c = clusterIdxs[i];
+          const d = tRef.current - c * CLUSTER_SPACING;
+          if (d < 0) {
+            _dummy.scale.setScalar(0);
+          } else {
+            const ctr = clusterCenters.current[c];
+            const wx = ctr.x + offsets[i * 3];
+            const wy = ctr.y + offsets[i * 3 + 1];
+            const wz = ctr.z + offsets[i * 3 + 2];
+            worldPosRef.current[i * 3] = wx;
+            worldPosRef.current[i * 3 + 1] = wy;
+            worldPosRef.current[i * 3 + 2] = wz;
+            _dummy.position.set(wx, wy, wz);
+            _dummy.scale.setScalar(1);
+          }
+          _dummy.updateMatrix();
+          mesh.setMatrixAt(i, _dummy.matrix);
+        }
       }
-      return;
-    }
-
-    const curve = new CatmullRomCurve3(points, false, "catmullrom", 0.5);
-
-    _dummy.scale.setScalar(1);
-
-    for (let i = 0; i < PARTICLE_COUNT; i++) {
-      const { phase, color } = particles[i];
-
-      // Travel position along the curve
-      const pathT = (phase + time * TRAVEL_SPEED) % 1;
-
-      const pos = curve.getPointAt(pathT);
-      curve.getTangentAt(pathT, _tangent).normalize();
-
-      // In-plane normal: rotate tangent 90°
-      const nx = -_tangent.y;
-      const ny = _tangent.x;
-
-      // All particles share the same oscillation phase — whole body swings together
-      const oscPhase = phase * Math.PI * 2 * OSC_CYCLES + time * OSC_SPEED;
-
-      const perpDisp = AMP_PERP * Math.sin(oscPhase);
-      const alongDisp = AMP_ALONG * Math.sin(0.5 * oscPhase);
-
-      _dummy.position.set(
-        pos.x + nx * perpDisp + _tangent.x * alongDisp,
-        pos.y + ny * perpDisp + _tangent.y * alongDisp,
-        0,
-      );
-      _dummy.updateMatrix();
-      mesh.setMatrixAt(i, _dummy.matrix);
-
-      _color.set(color);
-      mesh.setColorAt(i, _color);
     }
 
     mesh.instanceMatrix.needsUpdate = true;
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   });
 
   return (
-    <instancedMesh ref={meshRef} args={[null, null, PARTICLE_COUNT]}>
-      <sphereGeometry args={[SPHERE_RADIUS, 6, 6]} />
-      <meshBasicMaterial color="hotpink" />
+    <instancedMesh ref={meshRef} args={[null, null, N_TOTAL]}>
+      <sphereGeometry args={[PARTICLE_SIZE, 2, 2]} />
+      <meshBasicMaterial />
     </instancedMesh>
   );
 }
 
-// Debug line — confirms input is working independently of the particle system
-function DebugLine({ pointsRef }) {
+function PathLines({ committedRef, drawingRef }) {
+  const committedLineRef = useRef();
+  const drawingLineRef = useRef();
+
+  useFrame(() => {
+    const updateLine = (ref, pts) => {
+      if (!ref.current) return;
+      if (pts.length < 2) {
+        // Clear so the old geometry doesn't persist after mouse release
+        ref.current.geometry.setAttribute(
+          "position",
+          new Float32BufferAttribute(new Float32Array(0), 3),
+        );
+        return;
+      }
+      const flat = new Float32Array(pts.length * 3);
+      pts.forEach((p, i) => {
+        flat[i * 3] = p.x;
+        flat[i * 3 + 1] = p.y;
+        flat[i * 3 + 2] = p.z;
+      });
+      ref.current.geometry.setAttribute(
+        "position",
+        new Float32BufferAttribute(flat, 3),
+      );
+    };
+    updateLine(committedLineRef, committedRef.current);
+    updateLine(drawingLineRef, drawingRef.current);
+  });
+
+  return (
+    <>
+      <line ref={committedLineRef}>
+        <bufferGeometry />
+        <lineBasicMaterial color="#000000" opacity={0.5} transparent />
+      </line>
+      <line ref={drawingLineRef}>
+        <bufferGeometry />
+        <lineBasicMaterial color="#000000" opacity={0.25} transparent />
+      </line>
+    </>
+  );
+}
+
+function SinePath({ committedRef, metaRef }) {
   const lineRef = useRef();
 
   useFrame(() => {
-    const pts = pointsRef.current;
-    if (!lineRef.current || pts.length < 2) return;
-    const curve = new CatmullRomCurve3(pts);
-    const sampled = curve.getPoints(80);
-    const flat = new Float32Array(sampled.length * 3);
-    sampled.forEach((p, i) => {
+    if (!lineRef.current) return;
+    const path = committedRef.current;
+    const { lengths, totalLen } = metaRef.current;
+    if (path.length < 2 || totalLen <= 0) return;
+
+    const STEPS = 150;
+    const pts = [];
+    for (let i = 0; i <= STEPS; i++) {
+      pts.push(
+        getOffsetPointAt(path, lengths, totalLen, (i / STEPS) * totalLen),
+      );
+    }
+    const flat = new Float32Array(pts.length * 3);
+    pts.forEach((p, i) => {
       flat[i * 3] = p.x;
       flat[i * 3 + 1] = p.y;
       flat[i * 3 + 2] = p.z;
@@ -147,32 +297,69 @@ function DebugLine({ pointsRef }) {
   return (
     <line ref={lineRef}>
       <bufferGeometry />
-      <lineBasicMaterial color="white" />
+      <lineBasicMaterial color="#2b67af" opacity={0.7} transparent />
     </line>
   );
 }
 
-function Scene() {
-  const pointsRef = useInputSpine();
+function Scene({ showLines, showSine, orbitMode }) {
+  const { committedRef, metaRef, drawingRef, morphCountRef } =
+    useInputSpine(orbitMode);
   return (
     <>
-      <DebugLine pointsRef={pointsRef} />
-      <Swarm pointsRef={pointsRef} />
+      {orbitMode && <OrbitControls makeDefault />}
+      {showLines && (
+        <PathLines committedRef={committedRef} drawingRef={drawingRef} />
+      )}
+      {showSine && <SinePath committedRef={committedRef} metaRef={metaRef} />}
+      <DragonClusters
+        committedRef={committedRef}
+        metaRef={metaRef}
+        morphCountRef={morphCountRef}
+      />
     </>
   );
 }
 
 export default function App() {
+  const [showLines, setShowLines] = useState(true);
+  const [showSine, setShowSine] = useState(false);
+  const [orbitMode, setOrbitMode] = useState(false);
+
   return (
-    <Canvas
-      gl={{ antialias: true, alpha: false }}
-      camera={{ fov: 60, near: 0.1, far: 100, position: [0, 0, 10] }}
-      style={{ width: "100%", height: "100%" }}
-    >
-      <color attach="background" args={["#000000"]} />
-      <ambientLight intensity={0.5} />
-      <directionalLight position={[5, 8, 5]} intensity={1.0} />
-      <Scene />
-    </Canvas>
+    <div className="app-root">
+      <Canvas
+        gl={{ antialias: true, alpha: false }}
+        camera={{ fov: 60, near: 0.1, far: 100, position: [0, 0, 10] }}
+      >
+        <color attach="background" args={["#dcdcdc"]} />
+        <Scene
+          showLines={showLines}
+          showSine={showSine}
+          orbitMode={orbitMode}
+        />
+      </Canvas>
+
+      <div className="controls">
+        <button
+          className={`btn ${showLines ? "active" : ""}`}
+          onClick={() => setShowLines((v) => !v)}
+        >
+          Lines
+        </button>
+        <button
+          className={`btn ${showSine ? "active" : ""}`}
+          onClick={() => setShowSine((v) => !v)}
+        >
+          Sine
+        </button>
+        <button
+          className={`btn ${orbitMode ? "active" : ""}`}
+          onClick={() => setOrbitMode((v) => !v)}
+        >
+          Orbit
+        </button>
+      </div>
+    </div>
   );
 }

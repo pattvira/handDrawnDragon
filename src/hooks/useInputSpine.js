@@ -2,70 +2,97 @@ import { useRef, useEffect, useCallback } from 'react'
 import { Vector3, Raycaster, Vector2, Plane } from 'three'
 import { useThree } from '@react-three/fiber'
 
-const WINDOW_MAX  = 60
 const MIN_DIST_SQ = 0.01
 
-export function useInputSpine() {
+function smoothPath(pts, passes = 5) {
+  let result = pts.slice()
+  for (let p = 0; p < passes; p++) {
+    const s = [result[0].clone()]
+    for (let i = 1; i < result.length - 1; i++) {
+      s.push(new Vector3(
+        (result[i - 1].x + 2 * result[i].x + result[i + 1].x) / 4,
+        (result[i - 1].y + 2 * result[i].y + result[i + 1].y) / 4,
+        0,
+      ))
+    }
+    s.push(result[result.length - 1].clone())
+    result = s
+  }
+  return result
+}
+
+function buildMeta(pts) {
+  const lengths = [0]
+  for (let i = 1; i < pts.length; i++) {
+    lengths.push(lengths[i - 1] + pts[i].distanceTo(pts[i - 1]))
+  }
+  return { lengths, totalLen: lengths[lengths.length - 1] }
+}
+
+export function useInputSpine(orbitMode = false) {
   const { camera, gl } = useThree()
-  const pointsRef  = useRef([])
-  const isDragging = useRef(false)
+  const orbitModeRef = useRef(orbitMode)
+  const drawingRef   = useRef([])
+  const committedRef = useRef([])
+  const metaRef      = useRef({ lengths: [], totalLen: 0 })
+  const morphCountRef = useRef(0)
+  const isDragging   = useRef(false)
+
+  useEffect(() => { orbitModeRef.current = orbitMode }, [orbitMode])
 
   const unproject = useCallback((clientX, clientY) => {
     const rect = gl.domElement.getBoundingClientRect()
     const ndc = new Vector2(
-      ((clientX - rect.left) / rect.width)  *  2 - 1,
-      -((clientY - rect.top)  / rect.height) *  2 + 1,
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
     )
-    const raycaster = new Raycaster()
-    raycaster.setFromCamera(ndc, camera)
+    const ray = new Raycaster()
+    ray.setFromCamera(ndc, camera)
     const target = new Vector3()
-    raycaster.ray.intersectPlane(new Plane(new Vector3(0, 0, 1), 0), target)
+    ray.ray.intersectPlane(new Plane(new Vector3(0, 0, 1), 0), target)
     return target
   }, [camera, gl])
-
-  const addPoint = useCallback((x, y) => {
-    const world = unproject(x, y)
-    const pts = pointsRef.current
-    if (pts.length > 0) {
-      const last = pts[pts.length - 1]
-      const dx = world.x - last.x
-      const dy = world.y - last.y
-      if (dx * dx + dy * dy < MIN_DIST_SQ) return
-    }
-    pts.push(world)
-    if (pts.length > WINDOW_MAX) pts.shift()
-  }, [unproject])
 
   useEffect(() => {
     const canvas = gl.domElement
 
-    // Start: on the canvas only
-    const onMouseDown = (e) => {
+    const start = (x, y) => {
+      if (orbitModeRef.current) return
       isDragging.current = true
-      pointsRef.current.length = 0
-      addPoint(e.clientX, e.clientY)
-    }
-    const onTouchStart = (e) => {
-      e.preventDefault()
-      isDragging.current = true
-      pointsRef.current.length = 0
-      const t = e.touches[0]
-      addPoint(t.clientX, t.clientY)
+      drawingRef.current = [unproject(x, y)]
     }
 
-    // Continue + end: on window so drag works even if cursor leaves canvas
-    const onMouseMove = (e) => {
-      if (!isDragging.current) return
-      addPoint(e.clientX, e.clientY)
+    const move = (x, y) => {
+      if (orbitModeRef.current || !isDragging.current) return
+      const world = unproject(x, y)
+      const pts = drawingRef.current
+      if (pts.length > 0) {
+        const last = pts[pts.length - 1]
+        const dx = world.x - last.x
+        const dy = world.y - last.y
+        if (dx * dx + dy * dy < MIN_DIST_SQ) return
+      }
+      pts.push(world)
     }
-    const onMouseUp = () => { isDragging.current = false }
-    const onTouchMove = (e) => {
-      e.preventDefault()
-      if (!isDragging.current) return
-      const t = e.touches[0]
-      addPoint(t.clientX, t.clientY)
+
+    const end = () => {
+      if (orbitModeRef.current) return
+      isDragging.current = false
+      const raw = drawingRef.current
+      if (raw.length < 2) { drawingRef.current = []; return }
+      const smoothed = smoothPath(raw)
+      committedRef.current = smoothed
+      metaRef.current = buildMeta(smoothed)
+      morphCountRef.current += 1
+      drawingRef.current = []
     }
-    const onTouchEnd = () => { isDragging.current = false }
+
+    const onMouseDown  = (e) => start(e.clientX, e.clientY)
+    const onMouseMove  = (e) => move(e.clientX, e.clientY)
+    const onMouseUp    = () => end()
+    const onTouchStart = (e) => { e.preventDefault(); const t = e.touches[0]; start(t.clientX, t.clientY) }
+    const onTouchMove  = (e) => { e.preventDefault(); const t = e.touches[0]; move(t.clientX, t.clientY) }
+    const onTouchEnd   = () => end()
 
     canvas.addEventListener('mousedown',  onMouseDown)
     canvas.addEventListener('touchstart', onTouchStart, { passive: false })
@@ -82,7 +109,7 @@ export function useInputSpine() {
       window.removeEventListener('touchmove',  onTouchMove)
       window.removeEventListener('touchend',   onTouchEnd)
     }
-  }, [gl, addPoint])
+  }, [gl, unproject])
 
-  return pointsRef
+  return { committedRef, metaRef, drawingRef, morphCountRef }
 }
