@@ -1,12 +1,12 @@
-# Session 02 — Algorithm Pivot & p5 WEBGL Prototype
+# Session 02 — How the Dragon Looks (Algorithm Exploration)
 
 ---
 
 session: 02
-dates: 2026-06-16
+dates: 2026-06-16 → 2026-06-17
 model: Claude Sonnet 4.6
 stack: p5.js (WEBGL mode) — prototyping only, no Three.js changes
-status: Complete — prototype running, tuning still needed
+status: In progress — two approaches explored, SphereCluster most promising
 
 ---
 
@@ -69,6 +69,48 @@ Key mechanics:
 ### What's different about this workflow
 
 The key shift from session 01: Patt is writing the code and using Claude as a thinking partner, rather than Claude writing the code from a description. The Chladni reference gave a concrete starting point Patt already understood. The discussion translated it to the new context. The prototype was built by Patt using their own brain — reacting to what they saw, adjusting numbers, exploring. Less frustrating, faster feedback loop, more ownership of the result.
+
+### Pivot: SphereCluster approach
+
+Flocking behavior was set aside. New idea: instead of particles steering toward the line, **break the line into evenly spaced points and place a sphere-cluster of particles at each point.** The dragon body = a chain of `ParticleSystem` instances along the drawn path.
+
+**Structure:**
+- `Particle` — stores a pre-computed 3D offset from its cluster center, a color, and a size. Positions computed once at construction, static.
+- `ParticleSystem` — takes a center point and N, creates N particles distributed around it as a volumetric sphere cluster.
+
+**The distribution math — spherical coordinates:**
+
+Each particle position is generated in spherical coordinates (r, theta, phi) then converted to Cartesian (x, y, z):
+
+```
+theta = random(TWO_PI)          // full rotation around vertical axis
+phi   = acos(random(-1, 1))     // vertical spread — acos corrects for pole clustering
+r     = SPHERE_RADIUS * pow(random(), RADIAL_BIAS)
+```
+
+`theta` and `phi` are fixed — they give uniform angular coverage across the full sphere surface. `r` is the only creative lever.
+
+**Why `pow(random(), n)`:**
+
+`random()` is uniform 0→1. Used directly as r, it over-crowds the center — because in 3D, the volume near the surface is much larger than near the center, so equal probability per radius value actually means most particles end up closer to center than the eye expects.
+
+`pow(random(), n)` biases the distribution:
+- `n = 1.0` → linear, center-heavy
+- `n = 0.5` → square root, surface-biased (default)
+- `n = 0.1` → almost all particles on the surface shell
+
+Lower exponent = more shell-like. Higher = more filled center. This is a general trick: `pow(x, n)` where n < 1 pulls uniform random values toward 1 (toward surface).
+
+**What makes it look "full" at low particle count:**
+
+Particle size relative to sphere radius. Each particle at ~30% of `SPHERE_RADIUS` means neighbors overlap visually — the cluster reads as a solid mass even at 30 particles.
+
+**Tunable constants:**
+```js
+const SPHERE_RADIUS = 60;
+const PARTICLE_SIZE = SPHERE_RADIUS * 0.3;
+const RADIAL_BIAS   = 0.5;  // 0.1 = shell, 1.0 = center-filled
+```
 
 ---
 
