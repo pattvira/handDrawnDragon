@@ -8,10 +8,10 @@ import "./App.css";
 // Match p5 sketch proportions (p5 canvas 400×400, Three.js frustum height ≈ 11.55 at z=10)
 // Scale factor: 11.55 / 400 ≈ 0.029 per pixel
 const N_CLUSTERS = 5;
-const PARTICLES_PER_CLUSTER = 2000;
+const PARTICLES_PER_CLUSTER = 500;
 const N_TOTAL = N_CLUSTERS * PARTICLES_PER_CLUSTER;
 const SPHERE_RADIUS = 0.5; // p5: 20px → 0.58
-const PARTICLE_SIZE = 0.05; // p5: 2px  → 0.058
+const PARTICLE_SIZE = 0.03; // p5: 2px  → 0.058
 const RADIAL_BIAS = 0.5;
 const CLUSTER_SPACING = 0.3; // p5: 10px → 0.29
 const T_START = (N_CLUSTERS - 1) * CLUSTER_SPACING;
@@ -216,7 +216,7 @@ function DragonClusters({ committedRef, metaRef, morphCountRef }) {
 
   return (
     <instancedMesh ref={meshRef} args={[null, null, N_TOTAL]}>
-      <sphereGeometry args={[PARTICLE_SIZE, 2, 2]} />
+      <sphereGeometry args={[PARTICLE_SIZE, 8, 8]} />
       <meshBasicMaterial />
     </instancedMesh>
   );
