@@ -1,121 +1,141 @@
-# Session 02 — Input Debugging & Motion Model Exploration
+# Session 02 — Algorithm Pivot & p5 WEBGL Prototype
 
 ---
+
 session: 02
-date: 2026-06-15
+dates: 2026-06-16
 model: Claude Sonnet 4.6
-stack: Vite + React + Three.js (@react-three/fiber, @react-three/drei)
-status: In progress — motion model partially working, aesthetic direction still open
+stack: p5.js (WEBGL mode) — prototyping only, no Three.js changes
+status: Complete — prototype running, tuning still needed
+
 ---
 
 ## What we were trying to build
 
-Reconnect the working input engine from Session 01 to a new particle body, using a 2D canvas snippet as the motion reference. The target: particles that travel forward along the hand-drawn path while also oscillating side-to-side — dragon-like body motion.
+A new motion model for the dragon body. Session 01's travel + perpendicular oscillation approach was technically working but felt too mechanical and didn't reach the target aesthetic. Goal this session: find a better algorithm by discussing first, prototyping in p5, and only moving to Three.js once the feel is confirmed.
 
 ---
 
 ## What we actually built
 
-### Debugging — Black screen + cannot draw
+### Starting point: 2D Chladni reference → 3D without GPU
 
-Session started with two consecutive failures before any creative work happened.
+The session started from a specific question: the existing Chladni Patterns sketch (Patt's own p5 code) uses CPU-based steering to move particles toward nodal lines. Could the same approach be adapted to 3D, and applied to a drawn curve instead of a mathematical field — without requiring GPU compute or InstancedMesh?
 
-**Black screen:**
-- First attempt used `meshBasicMaterial vertexColors` without pre-initializing `instanceColor`
-- Three.js compiles the shader on the first WebGL render. If `instanceColor` doesn't exist at compile time, the shader has no vertex color support — subsequent `setColorAt` calls are silently ignored
-- Fix attempted: seed colors in `useEffect`. But R3F v9 starts its animation loop in a `useLayoutEffect` (Canvas level), which may fire before Swarm's `useEffect` — making the timing unreliable
-- Partial fix: switch back to `meshStandardMaterial vertexColors` with lights, which was the pattern that worked in Session 01
+The answer is yes in principle, but **look had to come before optimization**. InstancedMesh and GPU particles are performance solutions. Reaching for them before the motion feels right would mean optimizing the wrong thing. p5 WEBGL is slower but lets you see and react to what's actually happening — which is the whole point at this stage.
 
-**Cannot draw:**
-- After fixing the black screen, drawing produced nothing
-- Diagnosis took several rounds because the problem was ambiguous — could be input not firing, or rendering not responding to input
-- R3F v9 connects its event manager to the canvas container, which can shadow direct `gl.domElement` event listeners in certain configurations
-- Fix: split event listeners — `mousedown`/`touchstart` on `gl.domElement` (canvas), `mousemove`/`mouseup` on `window`. This is the standard drag pattern and bypasses container-level interception
+### Algorithm options discussed
 
-**The diagnostic that unlocked everything:**
-Added a `DebugLine` component alongside `Swarm` — same `pointsRef`, same `useFrame`, but just draws a white `CatmullRomCurve3` line. White line appeared immediately on draw → confirmed input was working → problem was isolated to `Swarm`'s rendering alone.
+**Option A — Chladni-style seek and settle**
 
-Then stripped `Swarm` to `meshBasicMaterial color="hotpink"` (no vertex colors). Pink spheres appeared → confirmed `InstancedMesh` and matrix updates were working → problem was isolated to color initialization timing.
+Direct translation: replace `chladni(x, y)` with distance-to-curve. If a particle is outside a threshold distance from the line, it wanders. If inside, it seeks the nearest point and settles.
 
-**Key diagnostic method:** Layer the problem. Test input separately from rendering. Test rendering separately from color. Each layer narrows the failure space by ~90%.
+**Option B — Flocking with line as soft attractor**
 
-### Iteration 4 — Travel + perpendicular oscillation
+The line creates a continuous pull rather than a settle condition. Forces:
 
-**Reference provided:** A 2D canvas snippet with 300 particles, each at a fixed position on a straight axis, oscillating perpendicularly in a Lissajous figure-8 pattern. Colors from a 10-color palette, fixed at mount.
+- **Line attraction** — active only outside a `TUBE_RADIUS` deadband. Inside the tube, no line force.
+- **Separation** — particles push each other away when too close. Creates volume — they can't all pile onto the line so they spread outward to equilibrium.
+- **Alignment** — not yet implemented.
 
-**What the user actually wanted:** Both travel AND oscillation — particles move forward along the drawn path while wiggling side-to-side. (The reference only had oscillation, no travel. The combination was the user's addition.)
+Inside the tube, only separation acts. Particles constantly nudge each other, drift slightly, correct. The body stays alive even when the line isn't changing.
 
-**How it works:**
-- 300 particles, each with a fixed `phase` (evenly staggered 0→1)
-- Per frame: `pathT = (phase + time × TRAVEL_SPEED) % 1` — moves each particle forward
-- At `pathT`: `curve.getPointAt()` for base position, `curve.getTangentAt()` for direction
-- In-plane normal: rotate tangent 90° → `(-tangent.y, tangent.x, 0)`
-- Displacement: `pos + normal × AMP_PERP × sin(oscPhase) + tangent × AMP_ALONG × sin(2 × oscPhase)`
-- `oscPhase` explored in two forms:
-  - `phase × 2π × OSC_CYCLES + time × OSC_SPEED` — staggered wave, each particle at different oscillation phase → produces a traveling sine-wave ribbon along the body
-  - `time × OSC_SPEED` — all particles share the same phase → whole body swings as one unit
+**3D volume: `restZ`**
 
-**Result:** Both variations work technically. Neither matches the target aesthetic. The sine-wave ribbon is too structured; the unified-swing version is too mechanical. The organic clustered feel from the Noni reference hasn't been reached.
+Each particle gets a `restZ` at birth — a fixed random value in `[-Z_SPREAD, Z_SPREAD]`. Line force target is `(nearest.x, nearest.y, this.restZ)` rather than `(nearest.x, nearest.y, 0)`. Particles converge in x,y toward the line but seek their own z-layer. Separation acts in full 3D.
 
-**Current state:** `PARTICLE_COUNT = 50`, `meshBasicMaterial color="hotpink"`, `DebugLine` still in scene. The user reverted the oscPhase experiment and ended the session here to document.
+### p5 WEBGL prototype
+
+Key mechanics:
+
+- `mousePressed`: clear path
+- `mouseDragged`: add points with minimum distance filter
+- `nearestOnPath()`: linear scan, returns nearest path vertex and 2D distance
+- `lineForce()`: if 2D distance > TUBE_RADIUS, steer toward `(nearest.x, nearest.y, restZ)`. Zero inside tube.
+- `separate()`: O(N²) pair check in full 3D
+- Key press: toggle draw mode / orbit mode — `orbitControl()` steals mouse events, so they can't coexist
+
+### What the prototype revealed
+
+**z still spreads out too much.** Even after reducing `Z_SPREAD` to match `TUBE_RADIUS`, the z-depth reads as excessive when orbiting. The tube cross-section is wider in z than it looks like it should be. Not yet resolved.
+
+**Unsettled aesthetic question.** Two directions are now visible and neither is clearly right yet:
+
+1. **Chaotic / always-moving** — particles continuously swarm, never settle. Energetic but potentially noisy.
+2. **Settle-after-draw** — particles swarm while the line is being drawn, then gradually settle and calm once the finger lifts. This is the instinct but it's unclear how to implement the transition: what changes when the line stops updating? Dampen velocity? Remove the tube radius deadband so particles converge fully onto the line?
+
+**From front-on camera, z-depth is invisible.** The 3D is real but unreadable without orbiting. Front-facing depth cues (size falloff, depth-based color, tilted camera) will be needed in the final version.
+
+### What's different about this workflow
+
+The key shift from session 01: Patt is writing the code and using Claude as a thinking partner, rather than Claude writing the code from a description. The Chladni reference gave a concrete starting point Patt already understood. The discussion translated it to the new context. The prototype was built by Patt using their own brain — reacting to what they saw, adjusting numbers, exploring. Less frustrating, faster feedback loop, more ownership of the result.
 
 ---
 
 ## Where the process broke down
 
-### 1. Debugging consumed most of the session
-Two rendering bugs (black screen, cannot draw) came before any creative iteration. Both were R3F v9 / Three.js 0.184 compatibility issues — not logic errors, just framework behavior that differs from what earlier versions did. The session's creative budget was mostly spent on infrastructure.
+### 1. Prototype-first instinct is working
 
-### 2. The reference was misread on first pass
-The 2D canvas snippet showed particles at fixed positions oscillating in place. The initial interpretation was "particles follow a Lissajous path" — wrong. The correct read was "particles are anchored to the axis and wiggle perpendicularly." This took an extra exchange to correct before a clean technical spec could be written.
+Discussing the algorithm before writing code — including describing it back in technical terms and comparing options — took maybe 20 minutes and collapsed what would have been 2-3 coding iterations. This is the workflow change from session 01 actually working.
 
-### 3. Motion spec is still not locked
-The user knows what it should *feel* like but hasn't been able to specify it in terms the code can execute. "Dragon-like body motion" and the reference snippet are pointing at the same target but from different angles — and the target still isn't fully triangulated.
+### 2. p5 WEBGL is a useful middle step
+
+Three.js WEBGL with InstancedMesh adds a lot of complexity (shader compilation timing, R3F event system, instanceColor). p5 WEBGL gives the same 3D space with much less friction. Getting the algorithm right here before porting is cheaper.
+
+### 3. Particle distribution along the line is still unsolved
+
+The nearest-point approach naturally clusters particles at the closest part of the path, not evenly along it. This is fine for Chladni (nodal lines are everywhere) but wrong for a dragon body (needs to fill the whole line). Needs a solution before this feels right.
 
 ---
 
 ## What worked well
 
-- **The DebugLine diagnostic** was the single most productive thing this session. One small component, added in one edit, eliminated half the problem space in one draw gesture.
-- **"Describe back before coding" held.** The motion spec was described in technical terms and confirmed before implementation. The implementation matched the spec. The spec just wasn't the right one yet — which is a creative problem, not a communication problem.
-- **The technical architecture of the particle system is solid.** `InstancedMesh`, `CatmullRomCurve3`, `useFrame`, ref-based data flow — all working correctly. Future iterations are aesthetic changes, not structural rewrites.
+- **Algorithm discussion first** — comparing Option A vs Option B before writing a line of code.
+- **Using existing Chladni code as a reference** — the steering pattern (desired - velocity, clamped to maxForce) was already understood. Translation was fast.
+- **WEBGL orbit mode** — being able to rotate the view and see z-depth confirmed the approach was working in 3D.
+- **`restZ` pattern** — simple, predictable, easy to tune. Gives the z-spread without relying on emergent z-separation.
 
 ---
 
 ## Key lesson
 
-> Debugging and creative exploration are different modes. When you're in a debugging session, don't also try to move the aesthetic forward. Fix the foundation first, confirm it works, then switch modes.
-
-This session tried to do both at once — and the debugging ate the creative time. The better sequence would have been: fix black screen → confirm with a known-working visual → end session. Start fresh next session with a clean foundation and creative focus.
+> The p5 WEBGL prototype is the right place to figure out if z-depth reads visually. The math is always correct; the question is whether it's _perceptible_ from the camera angle the user will actually see. That question is unanswerable without running it.
 
 ---
 
 ## What changes next session
 
-- [ ] Resolve `instanceColor` initialization properly — either `useLayoutEffect` or a ref-callback pattern — so vertex colors work reliably
-- [ ] Remove `DebugLine` once color rendering is confirmed (it's diagnostic scaffolding, not a feature)
-- [ ] Find or record a 2–3 second video of the exact body motion the dragon should have — not a still image, not a description
-- [ ] Decide on the `oscPhase` equation before writing more code — this is a creative decision, not a technical one
-- [ ] Set a particle count and sphere size that feels right before adding color (aesthetic layering: shape first, then color)
+- [ ] Fix particle distribution — particles should spread along the full line, not cluster at the nearest point. Options: assign each particle an index into the path array, or use a repulsion-from-other-settled-particles force.
+- [ ] Add alignment force — particles align velocity with neighbors. Should give the swarm a coherent flow direction along the line.
+- [ ] Solve the camera angle problem — what makes z-depth readable without requiring orbit? Depth-based color? Size falloff with z? Fixed tilted camera?
+- [ ] Tune `TUBE_RADIUS` and `Z_SPREAD` together until cross-section reads as circular from the intended camera angle.
+- [ ] Once p5 feel is confirmed, port to Three.js InstancedMesh.
 
 ---
 
 ## Cost & Model
 
-| | |
-|---|---|
-| **Model** | Claude Sonnet 4.6 |
-| **Pricing** | Input $3 / 1M tokens · Output $15 / 1M tokens |
-| **Cost driver this session** | Debugging loops — each "try this" → "still broken" → "try this" cycle generates output tokens without advancing the creative work |
-| **What made it expensive** | The black screen and cannot-draw bugs each took 3–4 exchanges to isolate. Debugging in a chat interface is inherently expensive because every hypothesis is a full message with context. |
-| **How to reduce next session** | Start from a confirmed working baseline. Don't touch the rendering system and the motion model in the same session. |
+|                                |                                                                             |
+| ------------------------------ | --------------------------------------------------------------------------- |
+| **Model**                      | Claude Sonnet 4.6                                                           |
+| **Pricing**                    | Input $3 / 1M tokens · Output $15 / 1M tokens                               |
+| **Cost driver**                | Mostly discussion and one prototype build — low output token count          |
+| **What made it cheaper**       | Algorithm discussion before coding. One prototype, not four rewrites.       |
+| **How to reduce next session** | Solve particle distribution problem on paper or in p5 before opening Claude |
 
 ---
 
 ## Open questions
 
-- What is the correct `oscPhase` equation — staggered wave, unified swing, or something else entirely?
-- Should particles have random color (from the 10-color palette) or a gradient tied to position or time?
-- `instanceColor` timing: is `useLayoutEffect` reliable in R3F v9, or does the color need to be initialized in the ref callback?
-- Sphere size and count: 50 particles at 0.07 radius feels sparse. What density looks right?
-- Is the `DebugLine` useful to keep as a permanent low-opacity guide, or should it disappear once the particle body is confident?
+- How do particles distribute evenly along the full line rather than clustering at the nearest point?
+- Does the separation force alone create enough z-spread, or is `restZ` always needed?
+- What makes the 3D volume readable from a fixed front-on camera — depth color? size falloff? tilted camera?
+- Is O(N²) separation fast enough at the particle count needed for the dragon to look full?
+- Should alignment be neighbor-based, tangent-based (align to curve direction), or both?
+- What particle count and size makes the body read as "fluffy" rather than sparse or overcrowded?
+
+---
+
+## Sketch
+
+p5.js editor: https://editor.p5js.org/pattvira/sketches/yBQutF8A_
