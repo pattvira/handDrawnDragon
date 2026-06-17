@@ -396,6 +396,28 @@ At 1M particles, the bottleneck is the CPU JS loop writing to `instanceMatrix`, 
 
 ---
 
+---
+
+## Deployment
+
+**GitHub:** `github.com/pattvira/handDrawnDragon`
+- `References/` excluded from git tracking (added to `.gitignore`) — p5 sketches and assets stay local only
+- `bluedragon.mov` (117MB) had to be scrubbed from git history with `filter-branch` before push would succeed
+
+**Vercel:** Connected to GitHub repo, auto-deploys on push. Vite detected automatically, no config needed.
+
+---
+
+## What changes next session
+
+- [ ] Test on actual mobile device via Vercel URL — check feel, frame rate, touch input
+- [ ] Tune constants for mobile: `SPHERE_RADIUS`, `CLUSTER_SPACING`, `SINE_AMP`, `SINE_FREQ`
+- [ ] Decide on particle count for mobile target
+- [ ] Explore fur/hair shape mode more seriously with a clearer reference
+- [ ] Consider depth cues to make 3D readable without orbit (size falloff, color gradient with z)
+
+---
+
 ## Sketch
 
 p5.js editor: https://editor.p5js.org/pattvira/sketches/yBQutF8A_
