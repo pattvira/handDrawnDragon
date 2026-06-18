@@ -161,12 +161,12 @@ One confirmation step before implementation, every time.
 
 ## What changes next session
 
-- [ ] Resolve `instanceColor` initialization properly (ref-callback or `useLayoutEffect`) so vertex colors work
-- [ ] Remove `DebugLine` once confirmed — it's diagnostic scaffolding, not a feature
-- [ ] Find or record a short video of the exact body motion the dragon should have — not a still image, not a description
-- [ ] Decide on `oscPhase` equation before writing code — this is a creative decision
-- [ ] Set particle count and sphere size before adding color — shape first, then color
-- [ ] Spend time in p5.js sketching the motion before opening a coding session
+- [x] Resolve `instanceColor` initialization — fixed in session 02: `vertexColors` on material caused `USE_COLOR * 0 = black`; removed it entirely, `instanceColor` works via `USE_INSTANCING_COLOR` automatically
+- [x] Remove `DebugLine` — replaced with `PathLines` component (committed + drawn path), functional not diagnostic
+- [ ] Find or record a short video of the exact body motion the dragon should have — still open
+- [x] `oscPhase` equation — abandoned entirely; replaced with sine wave offset perpendicular to drawn path (`getOffsetPointAt`)
+- [x] Particle count and sphere size — 2000/cluster × 5 clusters = 10k total; `PARTICLE_SIZE = 0.05`, `SPHERE_RADIUS = 0.5`
+- [x] p5.js sketching before session — this is exactly what session 02 was: full algorithm exploration in p5 before touching Three.js
 
 ---
 
@@ -193,7 +193,9 @@ The stage most missing from these sessions: **Experimenting** — a cheap visual
 
 The core skill isn't prompting technique. It's knowing which decisions belong to you and which you can safely delegate. Delegating execution works — "implement this equation," "add this event listener pattern." Delegating creative decisions generates iteration cost — "make it feel like a dragon," "make the motion organic." When that boundary blurs, output requires correction, and correction costs tokens and creative energy.
 
-For generative art specifically, the split is sharper: **you write the math, AI writes the plumbing.** The motion equation, the oscillation phase, the geometric relationships — those are the creative act. If you hand those to AI because you haven't figured them out yet, you'll get something technically correct and aesthetically mediocre. Figure out the math yourself first (in p5.js, on paper, in your head), then delegate the Three.js wiring.
+For generative art specifically, the split is sharper: **you own the concept, AI translates it into math and code.** The motion concept, the visual idea, the aesthetic judgment — those are the creative act. If you hand *those* to AI because you haven't figured them out yet, you'll get something technically correct and aesthetically mediocre.
+
+*Updated after session 02:* The math itself can be delegated more than originally thought — arc-length parameterization, sine wave offset, spherical coordinates were all written by Claude. But in each case, Patt brought the concept first (snake, sine wave, sphere cluster) and Claude found the math that implemented it. The creative act is the concept, not the equation. Figure out what you want the thing to *do* (in p5, on paper, in your head), then delegate the implementation.
 
 ### 4. Exhaust cheap tools before opening Claude
 
@@ -236,9 +238,9 @@ Some sessions are sketchbook sessions — exploratory, disposable, not meant to 
 
 ## Open questions
 
-- What is the actual motion the dragon's body should have? (needs video reference, not description)
-- What is the correct `oscPhase` equation — staggered wave, unified swing, or something else?
-- Should particles have random color (palette) or a gradient tied to position or time?
-- `instanceColor` initialization: ref-callback pattern or `useLayoutEffect`?
-- Sphere count and size: 50 at 0.07 radius feels sparse — what density looks right?
-- Is the `DebugLine` useful to keep as a permanent low-opacity guide?
+- What is the actual motion the dragon's body should have? (still needs video or clearer reference)
+- ~~What is the correct `oscPhase` equation~~ — replaced with sine wave offset on drawn path
+- ~~Should particles have random color or gradient~~ — resolved: random from palette `["#abcd5e", "#14976b", "#2b67af", "#62b6de", "#f589a3", "#ef562f", "#fc8405", "#f9d531"]`
+- ~~`instanceColor` initialization~~ — resolved: remove `vertexColors`, instance colors work automatically
+- ~~Sphere count and size~~ — resolved: 10k particles, `PARTICLE_SIZE = 0.05`
+- ~~Is `DebugLine` useful to keep~~ — replaced with toggleable `PathLines` + `SinePath`
